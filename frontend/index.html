@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>Logs Monitor</title>
+    <style>
+      html, body {
+        padding: 0;
+        margin: 0;
+        font-family: "Helvetica Neue", "Helvetica", sans-serif;
+      }
+      #app {
+        padding: 2em; 
+      }
+      .logs-container {
+        display: flex;
+        flex-wrap: wrap;
+        margin: 1em 0;
+      }
+      .log-container {
+        background: #eee;
+        padding: 1em;
+        margin: 0 1em 1em 0;
+      } 
+      .log-messages {
+        background: #ddd;
+        margin-top: 1em;
+        padding: 2em;
+        overflow-y: scroll;
+        max-height: 20em;
+        font-family: "Go Mono", "Fira Mono", monospace;
+        font-size: .75em;
+      }
+      .log-message {
+        margin-bottom: .5em;
+      }
+      h1, h2, h3, h4, h5, h6 {
+        padding: 0;
+        margin: 0;
+      }
+      .bm1 {
+        margin-bottom: 1em; 
+      }
+    </style>
+    <script src="https://unpkg.com/vue"></script>
+    <script>
+      window.addEventListener("load", function () {
+        var bus = new Vue();
+
+        Vue.component('log-input', {
+          template: '#log-input-template',
+          data: function () {
+            return {
+              path: ''
+            };
+          },
+          methods: {
+            post: function () {
+              console.log('posting', this.path);
+              let payload = {filepath: this.path};
+              let self = this;
+              request("POST", "http://localhost:8080/", payload, function (response) {
+                console.log('success: ', response);
+                self.$root.getLogList();
+              }, function (response) {
+                console.log('error: ', response); 
+              });
+            }
+          }
+        });
+
+        Vue.component('log-container', {
+          props: ['log'],
+          template: '#log-container-template',
+          data: function () {
+            return {
+              messages: [],
+              socket: null,
+              listening: false,
+            };
+          },
+          methods: {
+            startListen: function () {
+              this.listening = true;
+              let self = this;
+              
+              this.socket = new WebSocket("ws://localhost:8080/?id=" + this.log.id);
+              this.socket.onopen = function() {
+                console.log("socket opened for", self.log.id); 
+              }
+
+              this.socket.onmessage = function (event) {
+                let lines = event.data.split('\n');
+                lines.forEach(function (line) {
+                  if (line.length > 0) {
+                    self.messages.push(line);
+                  }
+                });
+              }
+
+              this.socket.onclose = function () {
+                console.log("socket closed for", self.log.id);
+              }
+            },
+
+            stopListen: function () {
+              console.log('stop listening for', this.log.id); 
+              if (this.socket) {
+                this.socket.close();
+                this.listening = false;
+              }
+            },
+
+            deleteLog: function () {
+              this.stopListen();
+              let self = this;
+              request('DELETE', 'http://localhost:8080/?id=' + this.log.id, null, function (response) {
+                console.log(response);
+                self.$root.getLogList();
+                self.$el.remove();
+              }, null);
+            }
+          },
+        });
+
+        var app = new Vue({
+          el: '#app',
+          data: {
+            title: 'Logs Monitor',
+            logItems: [],
+          },
+          methods: {
+            getLogList: function () {
+              let self = this;
+              request("GET", "http://localhost:8080/", null, function (response) {
+                self.logItems = [];
+                for (let id in response.data) {
+                  self.logItems.push({id: id, title: response.data[id]});
+                }
+              });
+            }
+          },
+          created: function () {
+            this.getLogList();
+          }
+        });  
+
+      });
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <h1 class="bm1">{{ title }}</h1>
+      <log-input></log-input>
+      <div class="logs-container">
+        <log-container v-for="log in logItems" v-bind:log="log"></log-container>
+      </div>
+    </div>
+
+    <script type="text/x-template" id="log-input-template">
+      <div>
+        <label for="">Add new file to watch:</label>
+        <input type="text" v-model="path" v-on:keyup.enter="post">
+        <button v-on:click="post">add</button>
+      </div>
+    </script>
+
+    <script type="text/x-template" id="log-container-template">
+      <div class="log-container">
+        <h3>{{ log.title }}</h3>
+        <nav>
+          <button v-on:click="startListen" v-if="!listening">start</button>
+          <button v-on:click="stopListen" v-if="listening">stop</button>
+          <button v-on:click="deleteLog">delete</button>
+        </nav>
+        <div class="log-messages">
+          <div class="log-message" v-for="msg in messages">{{ msg }}</div>
+        </div>
+      </div>
+    </script>
+
+    <script>
+      // Helpers
+   
+      // sends a request with optional data (PUT, POST)
+      // and exectutes the provided function on success
+      function request(verb, url, data, successFunc, errFunc) {
+        if (!errFunc) {
+          errFunc = function(response) {
+            console.log('error: ', verb, url, response);
+          };
+        }
+
+        if (!successFunc) {
+          successFunc = function(response) {
+            console.log('success: ', verb, url, response);
+          };
+        }
+
+        var httpRequest = new XMLHttpRequest();
+        httpRequest.open(verb, url);
+        httpRequest.timeout = 120000; // time in milliseconds
+        httpRequest.ontimeout = function () {
+          console.log('xhr timeout reached');
+        };
+        httpRequest.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+        httpRequest.send(JSON.stringify(data));
+        httpRequest.onreadystatechange = function () {
+          var response;
+          if (httpRequest.readyState === XMLHttpRequest.DONE) {
+            if (httpRequest.status === 200) {
+              response = JSON.parse(httpRequest.responseText);
+              successFunc(response);
+            } else if (httpRequest.status === 304) {
+              console.log('not modified');
+            } else {
+              response = JSON.parse(httpRequest.responseText);
+              errFunc(response);
+            }
+          }
+        };
+      }
+    </script>
+  </body>
+</html>
